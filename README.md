@@ -1,0 +1,1 @@
+# aws-lambda-shutdown-studio-kernel
