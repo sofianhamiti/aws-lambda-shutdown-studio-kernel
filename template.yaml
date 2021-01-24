@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Deploys a scheduled Lambda function to shutdown Studio kernels automatically
+
+Resources:
+  #================================================================================
+  # LAMBDA
+  #================================================================================
+  StudioShutdownFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: !Sub |
+          import json
+          import boto3
+          import logging
+          from botocore.config import Config
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          config = Config(retries = {'max_attempts': 10,'mode': 'standard'})
+          sagemaker = boto3.client('sagemaker', config=config)
+          paginator = sagemaker.get_paginator('list_apps')
+
+
+          def delete_app(domain_id, user_profile_name, app_type, app_name):
+              logger.info(f'deleting {app_type}: {app_name} in Domain: {domain_id}')
+
+              sagemaker.delete_app(
+                  DomainId=domain_id,
+                  UserProfileName=user_profile_name,
+                  AppType=app_type,
+                  AppName=app_name
+              )
+
+          def lambda_handler(event, context):
+              try:
+                  app_page_iterator = paginator.paginate(PaginationConfig={'PageSize': 50})
+
+                  for app_page in app_page_iterator:
+                      for app in app_page['Apps']:
+                          if app['AppName'] != 'default' and app['Status'] != 'Deleted':
+                              delete_app(app['DomainId'], app['UserProfileName'], app['AppType'], app['AppName'])
+
+              except Exception as e:
+                  logger.info(e)
+
+              return 'Studio apps deleted'
+
+      FunctionName: shutdown-studio-kernels
+      Handler: index.lambda_handler
+      Runtime: python3.7
+      Timeout: 600
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+  #================================================================================
+  # EVENTBRIDGE RULE: TRIGGERS LAMBDA EVERY DAY AT 18:00 UTC
+  #================================================================================
+  LambdaScheduledRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: ScheduledRule for Lambda Studio shutdown
+      ScheduleExpression: cron(0 18 * * ? *)
+      State: ENABLED
+      Targets:
+        - Arn: !GetAtt StudioShutdownFunction.Arn
+          Id: LambdaScheduledRule
+
+  LambdaSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt LambdaScheduledRule.Arn
+      FunctionName: !GetAtt StudioShutdownFunction.Arn
+  #================================================================================
+  # LAMBDA IAM ROLE
+  #================================================================================
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-studio-shutdown-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+
+  RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: lambda-studio-shutdown-policy
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sagemaker:DeleteApp'
+              - 'sagemaker:ListApps'
+            Resource: '*'
+      Roles:
+        - !Ref LambdaExecutionRole
