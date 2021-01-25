@@ -43,7 +43,7 @@ Resources:
                               delete_app(app['DomainId'], app['UserProfileName'], app['AppType'], app['AppName'])
 
               except Exception as e:
-                  logger.info(e)
+                  logger.error(e)
 
               return 'Studio apps deleted'
 
